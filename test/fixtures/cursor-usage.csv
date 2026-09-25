@@ -1,0 +1,4 @@
+Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+"2026-09-20T15:04:05.000Z","Included","claude-sonnet-5-thinking-high","No","12,000","3,000","40,000","2,500","57,500","$0.21"
+"2026-09-20T16:10:00.000Z","Included","gpt-5.6-sol-medium","No","0","8,000","0","1,000","9,000","Included"
+"2026-09-21T09:00:00.000Z","Usage-based","claude-opus-4-8-thinking-high","Yes","20,000","1,000","100,000","4,000","125,000","$1.50"

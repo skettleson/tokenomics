@@ -1,0 +1,13 @@
+{
+  "name": "tokenomics",
+  "private": true,
+  "type": "module",
+  "bin": { "tokenomics": "bin/tokenomics.ts" },
+  "scripts": {
+    "start": "node bin/tokenomics.ts serve",
+    "build": "node bin/tokenomics.ts build",
+    "calibrate": "node bin/tokenomics.ts calibrate",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=26" }
+}
