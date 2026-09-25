@@ -1,0 +1,10 @@
+{
+  "name": "tokenomics",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=26" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test"
+  }
+}
