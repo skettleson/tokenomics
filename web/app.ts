@@ -2,8 +2,8 @@ import { decodeFilters, DIMENSIONS, encodeFilters, loadCube, overlay, setRange, 
 import type { Cube, Dim, Filter, Filters } from './cube.ts';
 import { CHARTS, formatCount, formatPercent, formatUsd, STACK_DIMS } from './charts.ts';
 import type { ChartId, Pick, StackDim, TableView, Tooltip, TooltipRow } from './charts.ts';
-import { evaluateRules } from './rules.ts';
-import type { Finding, Metric } from './rules.ts';
+import { evaluateRules, groupFindings } from './rules.ts';
+import type { Finding, FindingGroup, Metric, RuleId } from './rules.ts';
 import { parseSnapshot } from '../shared/snapshot.ts';
 
 export type ViewState = {
@@ -14,7 +14,7 @@ export type ViewState = {
 export type AppState =
   | { phase: 'loading' }
   | { phase: 'failed'; reason: string }
-  | { phase: 'ready'; cube: Cube; view: ViewState; tables: ReadonlySet<ChartId>; focus: ChartId | null; rebuilding: boolean };
+  | { phase: 'ready'; cube: Cube; view: ViewState; tables: ReadonlySet<ChartId>; focus: ChartId | null; rebuilding: boolean; expandedGroups: ReadonlySet<RuleId> };
 
 export type Action =
   | { kind: 'snapshotLoaded'; cube: Cube; hash: string }
@@ -22,6 +22,8 @@ export type Action =
   | { kind: 'hashChanged'; hash: string }
   | { kind: 'pick'; pick: Pick }
   | { kind: 'followEvidence'; finding: Finding }
+  | { kind: 'followGroupEvidence'; group: FindingGroup }
+  | { kind: 'toggleGroupRows'; rule: RuleId }
   | { kind: 'removeFilter'; dim: Dim }
   | { kind: 'clearFilters' }
   | { kind: 'setDayRange'; lastDays: number | null }
@@ -63,6 +65,7 @@ export function reduce(state: AppState, action: Action, now: Date): AppState {
         tables: previous?.tables ?? new Set(),
         focus: null,
         rebuilding: false,
+        expandedGroups: previous?.expandedGroups ?? new Set(),
       };
     }
     case 'snapshotFailed':
@@ -73,6 +76,17 @@ export function reduce(state: AppState, action: Action, now: Date): AppState {
       return withView(state, (view) => ({ ...view, filters: applyPick(view.filters, action.pick) }));
     case 'followEvidence':
       return withView(state, (view) => ({ ...view, filters: overlay(view.filters, action.finding.evidence) }), action.finding.focus);
+    case 'followGroupEvidence': {
+      const evidence = action.group.evidence;
+      return evidence ? withView(state, (view) => ({ ...view, filters: overlay(view.filters, evidence) }), action.group.focus) : state;
+    }
+    case 'toggleGroupRows': {
+      if (state.phase !== 'ready') return state;
+      const expandedGroups = new Set(state.expandedGroups);
+      if (expandedGroups.has(action.rule)) expandedGroups.delete(action.rule);
+      else expandedGroups.add(action.rule);
+      return { ...state, expandedGroups, focus: null };
+    }
     case 'removeFilter':
       return withView(state, (view) => ({ ...view, filters: withoutDim(view.filters, action.dim) }));
     case 'clearFilters':
@@ -233,34 +247,79 @@ function formatMetric(metric: { unit: Metric['unit']; value: number }): string {
   }
 }
 
-function renderFindings(findings: readonly Finding[], dispatch: (action: Action) => void): HTMLElement {
+const GROUP_ROW_LIMIT = 5;
+
+function approx(basis: Finding['basis'], text: string): string {
+  return basis === 'estimated' ? `≈${text}` : text;
+}
+
+function renderFinding(finding: Finding, dispatch: (action: Action) => void): HTMLElement {
+  const item = node('li', `finding severity-${finding.severity}`);
+  const top = node('div', 'finding-top');
+  top.append(node('span', `severity-badge severity-${finding.severity}`, finding.severity), node('strong', 'finding-title', finding.title), node('span', 'finding-subject', finding.subject));
+  const metric = node('div', 'finding-metric');
+  metric.append(
+    node('span', 'muted', `${finding.metric.name}: `),
+    node('strong', '', approx(finding.basis, formatMetric(finding.metric))),
+    node('span', 'muted', ` ${finding.metric.comparator} ${formatMetric({ unit: finding.metric.unit, value: finding.metric.threshold })}`),
+  );
+  if (finding.impactUsd !== null) metric.append(node('span', 'impact', `impact ${approx(finding.basis, formatUsd(finding.impactUsd))}`));
+  metric.append(node('span', `basis basis-${finding.basis}`, finding.basis));
+  const actions = node('div', 'finding-actions');
+  actions.append(button('Show evidence', () => dispatch({ kind: 'followEvidence', finding })));
+  item.append(top, metric, node('p', 'finding-advice', finding.advice), actions);
+  return item;
+}
+
+function renderGroup(group: FindingGroup, expanded: boolean, dispatch: (action: Action) => void): HTMLElement {
+  const item = node('li', `finding finding-group severity-${group.severity}`);
+  const top = node('div', 'finding-top');
+  top.append(
+    node('span', `severity-badge severity-${group.severity}`, group.severity),
+    node('strong', 'finding-title', group.title),
+    node('span', 'finding-count', `×${group.findings.length}`),
+  );
+  if (group.totalImpactUsd !== null) top.append(node('span', 'impact group-impact', `${approx(group.basis, formatUsd(group.totalImpactUsd))} total`));
+  const first = group.findings[0].metric;
+  const rows = node('ol', 'group-rows');
+  rows.setAttribute('aria-label', `${first.name} per ${group.title.toLowerCase()}`);
+  const visible = expanded ? group.findings : group.findings.slice(0, GROUP_ROW_LIMIT);
+  for (const finding of visible) {
+    const row = node('li', 'group-row');
+    row.title = finding.advice;
+    const subject = node('span', 'group-subject', finding.subject);
+    const value = node('span', 'group-value', approx(finding.basis, formatMetric(finding.metric)));
+    const impact = node('span', 'group-value group-row-impact', finding.impactUsd === null ? '' : approx(finding.basis, formatUsd(finding.impactUsd)));
+    const evidence = button('Evidence', () => dispatch({ kind: 'followEvidence', finding }), 'link-button');
+    evidence.setAttribute('aria-label', `Show evidence for ${finding.subject}`);
+    row.append(subject, value, impact, evidence);
+    rows.append(row);
+  }
+  const columns = node('div', 'group-columns muted');
+  columns.append(node('span', '', group.findings.length === 1 ? 'subject' : 'subjects'), node('span', 'group-value', group.findings.every((finding) => finding.metric.name === first.name) ? first.name : ''), node('span', 'group-value', group.totalImpactUsd === null ? '' : 'impact'), node('span'));
+  const actions = node('div', 'finding-actions');
+  const hidden = group.findings.length - GROUP_ROW_LIMIT;
+  if (hidden > 0) actions.append(button(expanded ? 'Show fewer' : `Show ${hidden} more`, () => dispatch({ kind: 'toggleGroupRows', rule: group.rule }), 'link-button'));
+  if (group.evidence) actions.append(button('Show all evidence', () => dispatch({ kind: 'followGroupEvidence', group })));
+  const table = node('div', 'group-table');
+  table.append(columns, rows);
+  item.append(top, node('p', 'finding-advice', group.action), table, actions);
+  return item;
+}
+
+function renderFindings(groups: readonly FindingGroup[], expandedGroups: ReadonlySet<RuleId>, dispatch: (action: Action) => void): HTMLElement {
   const section = node('section', 'card findings');
   const header = node('div', 'card-header');
-  header.append(node('h2', 'card-title', 'Recommendations'), node('p', 'card-subtitle', `${findings.length} for the current filters · thresholds live in web/rules.ts`));
+  const count = groups.reduce((sum, group) => sum + group.findings.length, 0);
+  const summary = `${count} ${count === 1 ? 'recommendation' : 'recommendations'} in ${groups.length} ${groups.length === 1 ? 'group' : 'groups'}`;
+  header.append(node('h2', 'card-title', 'Recommendations'), node('p', 'card-subtitle', `${summary} for the current filters · thresholds live in web/rules.ts`));
   section.append(header);
-  if (findings.length === 0) {
+  if (groups.length === 0) {
     section.append(node('p', 'muted', 'No rule fires for this selection.'));
     return section;
   }
   const list = node('ol', 'finding-list');
-  for (const finding of findings) {
-    const item = node('li', `finding severity-${finding.severity}`);
-    const top = node('div', 'finding-top');
-    top.append(node('span', `severity-badge severity-${finding.severity}`, finding.severity), node('strong', 'finding-title', finding.title), node('span', 'finding-subject', finding.subject));
-    const metric = node('div', 'finding-metric');
-    const observed = formatMetric(finding.metric);
-    metric.append(
-      node('span', 'muted', `${finding.metric.name}: `),
-      node('strong', '', finding.basis === 'estimated' ? `≈${observed}` : observed),
-      node('span', 'muted', ` ${finding.metric.comparator} ${formatMetric({ unit: finding.metric.unit, value: finding.metric.threshold })}`),
-    );
-    if (finding.impactUsd !== null) metric.append(node('span', 'impact', `impact ${finding.basis === 'estimated' ? '≈' : ''}${formatUsd(finding.impactUsd)}`));
-    metric.append(node('span', `basis basis-${finding.basis}`, finding.basis));
-    const actions = node('div', 'finding-actions');
-    actions.append(button('Show evidence', () => dispatch({ kind: 'followEvidence', finding })));
-    item.append(top, metric, node('p', 'finding-advice', finding.advice), actions);
-    list.append(item);
-  }
+  for (const group of groups) list.append(group.findings.length === 1 ? renderFinding(group.findings[0], dispatch) : renderGroup(group, expandedGroups.has(group.rule), dispatch));
   section.append(list);
   return section;
 }
@@ -304,7 +363,7 @@ export function render(root: HTMLElement, state: AppState, dispatch: (action: Ac
   }
   const { cube, view } = state;
   const selection = cube.select(view.filters);
-  const findings = evaluateRules({ cube, selection, now: new Date() });
+  const groups = groupFindings(evaluateRules({ cube, selection, now: new Date() }));
   const header = node('header', 'page-header');
   const titleRow = node('div', 'title-row');
   titleRow.append(node('h1', '', 'Tokenomics'), node('span', 'muted', state.rebuilding ? 'Rebuilding…' : `${formatCount(cube.rowCount)} requests from Claude Code, Codex and Cursor`));
@@ -328,7 +387,7 @@ export function render(root: HTMLElement, state: AppState, dispatch: (action: Ac
     card.append(cardHeader, body);
     grid.append(card);
     cards.set(spec.id, card);
-    if (spec.id === 'kpis') grid.append(renderFindings(findings, dispatch));
+    if (spec.id === 'kpis') grid.append(renderFindings(groups, state.expandedGroups, dispatch));
   }
   root.replaceChildren(header, grid);
   for (const spec of CHARTS) {

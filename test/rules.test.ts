@@ -5,8 +5,8 @@ import type { Harvest, SessionFact, UsageFact } from '../compile/compile.ts';
 import { tokens } from '../shared/snapshot.ts';
 import type { Fidelity, Speed, TokenKind, Tool } from '../shared/snapshot.ts';
 import { loadCube } from '../web/cube.ts';
-import { RULES } from '../web/rules.ts';
-import type { RuleId } from '../web/rules.ts';
+import { groupFindings, RULES } from '../web/rules.ts';
+import type { Finding, RuleId } from '../web/rules.ts';
 
 type Row = {
   session: string;
@@ -159,4 +159,63 @@ test('cursorEstimatesOnly fires only when Cursor has no measured usage', () => {
     { subject: 'cursor', value: 1, threshold: 0.99, impactUsd: null, basis: 'estimated' },
   ]);
   assert.deepEqual(run('cursorEstimatesOnly', cursor, [estimated, { ...estimated, fidelity: 'measured' }]), []);
+});
+
+function finding(rule: RuleId, subject: string, severity: Finding['severity'], impactUsd: number | null, basis: Finding['basis'], session: number): Finding {
+  return {
+    rule,
+    title: rule,
+    severity,
+    subject,
+    metric: { name: 'm', value: 1, comparator: '>=', threshold: 1, unit: 'usd' },
+    impactUsd,
+    basis,
+    advice: subject,
+    evidence: { session: { kind: 'keys', keys: new Set([session]) } },
+    focus: 'topSessions',
+  };
+}
+
+test('groupFindings collapses findings of one rule into a group ordered by severity then impact', () => {
+  const groups = groupFindings([
+    finding('outputHeavySession', 'o1', 'low', 500, 'measured', 9),
+    finding('runawaySession', 'r1', 'medium', 200, 'measured', 1),
+    finding('runawaySession', 'r2', 'high', 300, 'estimated', 2),
+  ]);
+  assert.deepEqual(
+    groups.map((group) => ({
+      rule: group.rule,
+      subjects: group.findings.map((member) => member.subject),
+      severity: group.severity,
+      totalImpactUsd: group.totalImpactUsd,
+      basis: group.basis,
+      action: group.action,
+      evidence: group.evidence,
+    })),
+    [
+      {
+        rule: 'runawaySession',
+        subjects: ['r2', 'r1'],
+        severity: 'high',
+        totalImpactUsd: 500,
+        basis: 'estimated',
+        action: 'Split long tasks into fresh sessions and compact earlier.',
+        evidence: { session: { kind: 'keys', keys: new Set([2, 1]) } },
+      },
+      {
+        rule: 'outputHeavySession',
+        subjects: ['o1'],
+        severity: 'low',
+        totalImpactUsd: 500,
+        basis: 'measured',
+        action: 'Ask for diffs instead of whole files and lower effort for routine edits.',
+        evidence: { session: { kind: 'keys', keys: new Set([9]) } },
+      },
+    ],
+  );
+});
+
+test('groupFindings reports a null total when no member has an impact', () => {
+  const groups = groupFindings([finding('contextBloat', 'a', 'medium', null, 'measured', 1), finding('contextBloat', 'b', 'medium', null, 'measured', 2)]);
+  assert.deepEqual(groups.map((group) => [group.findings.length, group.totalImpactUsd]), [[2, null]]);
 });

@@ -1,6 +1,7 @@
 import { resolvePrice, priceRow } from '../shared/prices.ts';
 import { SPEEDS, TOKEN_KINDS } from '../shared/snapshot.ts';
 import type { TokenKind } from '../shared/snapshot.ts';
+import { unionFilters } from './cube.ts';
 import type { Cube, Filters, Selection } from './cube.ts';
 
 export type ChartFocus = 'dailyCost' | 'tokenMix' | 'costByProject' | 'costByModel' | 'cacheHitByWeek' | 'sessionScatter' | 'topSessions' | 'sources';
@@ -439,12 +440,69 @@ export const RULES: Readonly<Record<RuleId, Rule>> = {
   },
 };
 
+export const RULE_ACTIONS: Readonly<Record<RuleId, string>> = {
+  lowCacheHit: 'Keep system prompts and tool lists stable and avoid editing early context mid-session.',
+  cacheWriteChurn: 'Keep context stable across a session so cache writes are re-read before they expire.',
+  premiumShortSessions: 'Run short, simple sessions on a standard-tier model.',
+  runawaySession: 'Split long tasks into fresh sessions and compact earlier.',
+  contextBloat: 'Compact or start fresh once a sub-task is done.',
+  outputHeavySession: 'Ask for diffs instead of whole files and lower effort for routine edits.',
+  premiumShareRising: 'Check whether routine work drifted onto premium models.',
+  fastModePremium: 'Use standard speed unless latency matters.',
+  cacheExpiryRewrites: 'Resume sooner, or use the 1-hour cache for sessions with long pauses.',
+  pricingGaps: 'Add or correct the model prices in shared/prices.ts.',
+  cursorEstimatesOnly: 'Import a Cursor usage export from cursor.com/dashboard, then Rebuild.',
+};
+
+export type FindingGroup = {
+  rule: RuleId;
+  title: string;
+  severity: Severity;
+  action: string;
+  findings: readonly Finding[];
+  totalImpactUsd: number | null;
+  basis: 'measured' | 'estimated';
+  evidence: Filters | null;
+  focus: ChartFocus;
+};
+
 const SEVERITY_ORDER: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
 
 export function evaluateRules(context: RuleContext): Finding[] {
   return (Object.keys(RULES) as RuleId[])
     .flatMap((id) => RULES[id](context))
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || (b.impactUsd ?? 0) - (a.impactUsd ?? 0));
+}
+
+function byImpactDesc(a: number | null, b: number | null): number {
+  if (a === null || b === null) return (a === null ? 1 : 0) - (b === null ? 1 : 0);
+  return b - a;
+}
+
+export function groupFindings(findings: readonly Finding[]): FindingGroup[] {
+  const byKind = new Map<string, Finding[]>();
+  for (const finding of findings) {
+    const kind = `${finding.rule}\u0000${finding.title}`;
+    byKind.set(kind, [...(byKind.get(kind) ?? []), finding]);
+  }
+  return [...byKind.values()]
+    .map((members): FindingGroup => {
+      const rule = members[0].rule;
+      const sorted = [...members].sort((a, b) => byImpactDesc(a.impactUsd, b.impactUsd));
+      const impacts = sorted.flatMap((finding) => (finding.impactUsd === null ? [] : [finding.impactUsd]));
+      return {
+        rule,
+        title: sorted[0].title,
+        severity: sorted.reduce<Severity>((worst, finding) => (SEVERITY_ORDER[finding.severity] < SEVERITY_ORDER[worst] ? finding.severity : worst), 'low'),
+        action: RULE_ACTIONS[rule],
+        findings: sorted,
+        totalImpactUsd: impacts.length ? impacts.reduce((sum, value) => sum + value, 0) : null,
+        basis: sorted.some((finding) => finding.basis === 'estimated') ? 'estimated' : 'measured',
+        evidence: unionFilters(sorted.map((finding) => finding.evidence)),
+        focus: members[0].focus,
+      };
+    })
+    .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || byImpactDesc(a.totalImpactUsd, b.totalImpactUsd));
 }
 
 export type Distribution = { metric: string; count: number; p50: number; p90: number; p99: number; max: number };

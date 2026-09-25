@@ -397,6 +397,22 @@ export function intersect(base: Filters, narrowing: Filters): Filters {
   return next;
 }
 
+export function unionFilters(filters: readonly Filters[]): Filters | null {
+  if (filters.length === 0) return null;
+  const dims = DIMENSIONS.filter((dim) => filters[0][dim]);
+  const union: Partial<Record<Dim, Filter>> = {};
+  for (const dim of dims) {
+    const keys = new Set<number>();
+    for (const each of filters) {
+      const filter = each[dim];
+      if (filter?.kind !== 'keys') return null;
+      for (const key of filter.keys) keys.add(key);
+    }
+    union[dim] = { kind: 'keys', keys };
+  }
+  return filters.every((each) => DIMENSIONS.filter((dim) => each[dim]).length === dims.length) ? union : null;
+}
+
 export function overlay(base: Filters, replacing: Filters): Filters {
   return { ...base, ...replacing };
 }

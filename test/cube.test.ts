@@ -4,7 +4,7 @@ import { encodeSnapshot } from '../compile/compile.ts';
 import type { Harvest, SessionFact, UsageFact } from '../compile/compile.ts';
 import { tokens } from '../shared/snapshot.ts';
 import type { Fidelity, TokenKind, Tool } from '../shared/snapshot.ts';
-import { decodeFilters, encodeFilters, loadCube, setRange, toggleKey } from '../web/cube.ts';
+import { decodeFilters, encodeFilters, loadCube, setRange, toggleKey, unionFilters } from '../web/cube.ts';
 import type { Cube, Dim } from '../web/cube.ts';
 
 function session(key: string, tool: Tool, projectPath: string | null): SessionFact {
@@ -135,4 +135,14 @@ test('narrow intersects evidence with the current selection', () => {
   const selection = cube.select({ tool: { kind: 'keys', keys: new Set([0]) } });
   const narrowed = selection.narrow({ model: { kind: 'keys', keys: new Set([keyOf(cube, 'model', 'claude-opus-5'), keyOf(cube, 'model', 'grok-4.5')]) } });
   assert.equal(narrowed.total().value('costUsd'), 6);
+});
+
+test('unionFilters merges key sets per dimension and refuses what it cannot merge', () => {
+  const s1 = { session: { kind: 'keys' as const, keys: new Set([1]) } };
+  const s2 = { session: { kind: 'keys' as const, keys: new Set([2, 1]) } };
+  assert.deepEqual(unionFilters([s1, s2]), { session: { kind: 'keys', keys: new Set([1, 2]) } });
+  assert.equal(unionFilters([s1, { project: { kind: 'keys', keys: new Set([1]) } }]), null);
+  assert.equal(unionFilters([s1, { ...s1, project: { kind: 'keys', keys: new Set([1]) } }]), null);
+  assert.equal(unionFilters([{ week: { kind: 'range', from: 0, toExclusive: 2 } }, { week: { kind: 'keys', keys: new Set([3]) } }]), null);
+  assert.equal(unionFilters([]), null);
 });
