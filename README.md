@@ -1,8 +1,14 @@
-# Tokenomics
+# Tokenomics: token usage and cost dashboard for Claude Code, Codex and Cursor
 
-Tokenomics shows what your AI coding tools cost. It reads the local session logs of Claude Code, Codex and Cursor, prices every request, and serves a dashboard with charts, filters and recommendations on where the money goes.
+Tokenomics tracks the token usage and cost of your AI coding tools. It reads the local session logs of Claude Code, OpenAI Codex CLI and Cursor, prices every request, and serves a local dashboard with charts, filters and recommendations on where the money goes.
 
-Everything runs on your machine. The server listens on `127.0.0.1` only, and no data leaves your computer.
+Use it to answer questions like these:
+
+- How much did Claude Code cost me this week, and on which projects?
+- Which models and sessions drive my Codex and Cursor spend?
+- Is prompt caching working, or am I paying full price for the same context?
+
+Everything runs on your machine. The server listens on `127.0.0.1` only, and no data leaves your computer. There is no account, API key or telemetry.
 
 ## Requirements
 
